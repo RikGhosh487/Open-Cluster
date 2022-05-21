@@ -5,9 +5,7 @@
 
 This **directory** contains SQL queries from several public access data repositories for astrometric data collection and observation of stellar objects.
 
-Public Databases
-
-----
+### Public Databases
 
 The following public data repositories have been queried (Please find additional information in respective links):
 - **G**lobal **A**strometric **I**nterferometer For **A**strophysics ([GAIA](https://sci.esa.int/web/gaia))
@@ -24,9 +22,7 @@ The data can be further improved with the full **DR3** that is set to be release
 
 There are other databases that could be queried for further information, but were rejected due to sufficient data found from the aforementioned databases.
 
-Additional Links
-
------
+### Additional Links
 
 * [SQL](https://en.wikipedia.org/wiki/SQL)
 * [ADQL](https://en.wikipedia.org/wiki/Astronomical_Data_Query_Language)
