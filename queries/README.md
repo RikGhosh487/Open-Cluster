@@ -1,1 +1,1 @@
-# SQL Queries ![SQL](./sql.png)
+# SQL Queries <img src="./sql.png" width="50">
