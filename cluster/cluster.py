@@ -1,15 +1,19 @@
 import pandas as pd
 import numpy as np
-from os import path
+from os import path, mkdir
 from colorama import init, Fore
 from copy import deepcopy
 from matplotlib import pyplot as plt
 from typing import Union
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import MinMaxScaler
 
 # system settings
 import sys
 
-sys.tracebacklimit = 5
+
+sys.tracebacklimit = 0
 init(convert=True, autoreset=True)
 
 
@@ -17,6 +21,7 @@ class Cluster(object):
 
     def __init__(self,
                 dataset_path: str, 
+                num_inits: int = 1,
                 new_csv: bool = False,
                 new_dir: str = '',
                 verbose: bool = False) -> None:
@@ -36,6 +41,8 @@ class Cluster(object):
         if self.__extension != 'csv':
             raise ValueError(Fore.RED + 'File is not a csv')
         
+        if num_inits <= 0:
+            raise ValueError(Fore.RED + 'There must be at least one initialization')
         
         # meta data for new file
         self.__create_new = new_csv
@@ -45,12 +52,24 @@ class Cluster(object):
         self.__verbose = verbose
         self.__df = None
         self.__bins = 45
+        self.__distance_estimate = 0
+        self.__mem_bins = 100
+        self.__num_inits = num_inits
+        self.__exclusion = 0
+        self.__top_mem = 0
+        self.__gmm = GaussianMixture(n_components=2, n_init=self.__num_inits)
+
 
         self.ra_lab = r'Right Ascension (deg) [$\alpha$]'
         self.dec_lab = r'Declination (deg) [$\delta$]'
+        self.pmra_lab = r'Proper Motion in Right Ascension (mas/yr) [$\mu_{\alpha*}$]'
+        self.pmdec_lab = r'Proper Motion in Declination (mas/yr) [$\mu_\delta$]'
         self.axes = dict(gaia=(r'$G-R_P$', r'$G$'), sdss=(r'$G-R$', r'$G$'), simbad=(r'$B-V$', r'$B$'))
         self.cmd = dict(gaia=('g_rp', 'g'), sdss=('g','r','g'), simbad=('B','V','B'))
         self.plots = ['hist', 'hist2d', 'plot', 'scatter', 'boxplot']
+        self.mem_cols = ['pmra', 'pmdec', 'parallax']
+        self.__slopes = [0.719, 1.392]
+        self.__intercepts = [9.37, -84.5]
 
         keys = self.axes.keys()
         match = False
@@ -105,8 +124,32 @@ class Cluster(object):
             to_ret += Fore.BLUE + '%dr x %dc' % self.__df.shape
         to_ret += '\n'
 
-        to_ret += Fore.WHITE + 'Default Histogram Bins: \t' + Fore.BLUE + '%d\n' % self.__bins
+        pre_filter = ' (not specified)'
 
+        to_ret += Fore.WHITE + 'Default Histogram Bins: \t' + Fore.BLUE + '%d\n' % self.__bins
+        to_ret += Fore.WHITE + 'Distance Estimate: \t\t' + Fore.BLUE + '%dpc' % self.__distance_estimate
+        if self.__distance_estimate == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
+        to_ret += Fore.WHITE + 'GMM Initializations: \t\t' + Fore.BLUE + '%d\n' % self.__num_inits
+
+        to_ret += Fore.WHITE + 'Extrapolation Slopes: \t\t' + Fore.YELLOW + 'min: %.3f max: %.3f\n' \
+            % (self.__slopes[0], self.__slopes[1])
+        to_ret += Fore.WHITE + 'Extrapolation Intercepts: \t' + Fore.YELLOW + 'min: %.3f max: %.3f\n' \
+            % (self.__intercepts[0], self.__intercepts[1])
+
+        to_ret += Fore.WHITE + 'Members Histogram Bins: \t' + Fore.BLUE + '%d' % self.__mem_bins
+        if self.__distance_estimate == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
+        to_ret += Fore.WHITE + 'Exclusion Threshold: \t\t' + Fore.BLUE + '%d' % self.__exclusion
+        if self.__distance_estimate == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
+        to_ret += Fore.WHITE + 'Selection Threshold: \t\t' + Fore.BLUE + '%d' % self.__top_mem
+        if self.__distance_estimate == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
         return to_ret
 
     
@@ -215,8 +258,112 @@ class Cluster(object):
                         plt.show()
 
 
+    def filter_members(self, 
+                    dist_est: float = 2500,
+                    num_inits: int = 5,
+                    exclusion: int = 5,
+                    top_mem: int = 25,
+                    inplace: bool = True) -> Union[pd.DataFrame, None]:
+        
+        self.__distance_estimate = dist_est
+        self.__top_mem = top_mem
+        self.__exclusion = exclusion
+        self.__num_inits = num_inits
+        
+        # checks
+        for label in self.mem_cols:
+            if label not in self.__df.keys():
+                raise ValueError('%s is not present in the %d dataframe' % (label, self.__filename))
+        
+        # linear interpolation of Mixture Model bounds based on estimated distance
+        lower_bound = self.__slopes[0] * self.__distance_estimate + self.__intercepts[0]
+        upper_bound = self.__slopes[1] * self.__distance_estimate + self.__intercepts[1]
+
+        # minimized copy for data pruning
+        feeder_frame = self.__df[self.mem_cols]
+        feeder_frame = feeder_frame[1000 / feeder_frame[self.mem_cols[2]] <= upper_bound]
+        feeder_frame = feeder_frame[1000 / feeder_frame[self.mem_cols[2]] >= lower_bound]
+
+        # filter members here
+        feeder_vals = feeder_frame.values
+        scaled_vals = pd.DataFrame(MinMaxScaler().fit_transform(feeder_vals))
+
+        trained_gmm = self.__gmm.fit(scaled_vals)
+        logits = trained_gmm.predict_proba(scaled_vals)
+
+        if self.__verbose:
+            labels = trained_gmm.predict(scaled_vals)
+            fig, axs = plt.subplots(1, 2, sharex=True, sharey=True)
+            axs[0].scatter(scaled_vals[0], scaled_vals[1], cmap='viridis', marker='.', c=labels)
+            axs[0].set_title('Argmax Binning')
+            scat = axs[1].scatter(scaled_vals[0], scaled_vals[1], cmap='plasma', marker='.', c=logits[:,1])
+            axs[1].set_title('Softmax Binning')
+            cb = plt.colorbar(scat, spacing='proportional', ax=axs[1])
+            cb.set_label('Softmax Probability Color Bar')
+
+            fig.suptitle('Gaussian Mixture Model Membership Binning')
+            fig.supxlabel(self.pmra_lab)
+            fig.supylabel(self.pmdec_lab)
+            plt.show()
+
+            del fig, axs
+
+        bin1 = logits[:, 0]
+        bin2 = logits[:, 1]
+        mem1 = list(filter(lambda prob: prob >= 0.5, bin1))
+        mem2 = list(filter(lambda prob: prob >= 0.5, bin2))
+        ambi_pred_cnt = len(list(filter(lambda prob: 0.4 <= prob <= 0.6, bin1)))
+
+        hist1, _ = np.histogram(bin1, self.__mem_bins)
+        hist2, _ = np.histogram(bin2, self.__mem_bins)
+        std1, std2 = np.std(hist1[-self.__exclusion:]), np.std(hist2[-self.__exclusion])
+        probs, bins = None, 0
+
+        if ambi_pred_cnt < .05 * len(bin1) or hist1[0] < .1 * hist2[0] or hist2[0] < .1 * hist1[0]:
+            probs = bin2 if len(mem1) > len(mem2) else bin1
+        else:
+            probs = bin2 if std1 < std2 else bin1
+
+        feeder_frame['probs'] = probs
+
+        if self.__verbose:
+            _, bins, _ = plt.hist(probs, bins=self.__mem_bins, histtype='step', density=True, color='sienna')
+            plt.xlabel('Probability of being a Cluster Member ' + r'$[P(N_{mem})]$')
+            plt.ylabel('Density of Frequency')
+            plt.title('Distribution of Softmax Probabilities for Cluster Membership')
+            plt.show()
+        else:
+            _, bins = np.histogram(probs, self.__mem_bins)
+        
+        self.__top_mem = min(self.__top_mem, len(bins) // 2)
+        feeder_frame = feeder_frame[feeder_frame['probs'] >= bins[-self.__top_mem]]
+        feeder_frame.drop(columns=['probs'], inplace=True)
+
+        pmra_maps = np.array(feeder_frame[self.mem_cols[0]])
+        filtered_df = deepcopy(self.__df)
+        filtered_df = filtered_df[filtered_df[self.mem_cols[0]].isin(pmra_maps)]
+        
+        if self.__create_new:
+            if not path.exists(self.__new_data_dir):
+                mkdir(self.__new_data_dir)
+
+            new_file = ''
+            if path.exists('%s/%s' % (self.__new_data_dir, self.__filename)):
+                new_file = '%s/%s_1.%s' % (self.__new_data_dir, self.__filename, self.__extension)
+            else:
+                new_file = '%s/%s.%s' % (self.__new_data_dir, self.__filename, self.__extension)
+            filtered_df.to_csv(new_file, index=False)
+        
+        if inplace:
+            self.__df = filtered_df
+            return None
+        
+        return filtered_df
+
+
 if __name__ == '__main__':
-    clust = Cluster('raw_data/gaia.csv', True, 'new')
+    clust = Cluster('raw_data/gaia.csv', 5, True, 'new', True)
     clust.load_data()
-    # print(clust)
+    clust.filter_members()
+    print(clust)
     clust.visualize(dict(scatter=[('pmra', 'pmdec')], boxplot=['pmra', 'pmdec']))
