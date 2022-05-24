@@ -5,9 +5,11 @@ from colorama import init, Fore
 from copy import deepcopy
 from matplotlib import pyplot as plt
 from typing import Union
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.neighbors import NearestNeighbors
 from sklearn.mixture import GaussianMixture
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.cluster import DBSCAN
+from kneed import KneeLocator
 
 # system settings
 import sys
@@ -58,6 +60,9 @@ class Cluster(object):
         self.__exclusion = 0
         self.__top_mem = 0
         self.__gmm = GaussianMixture(n_components=2, n_init=self.__num_inits)
+        self.__min_samples = 0
+        self.__epsilon = 0
+        self.__dbscan = None 
 
 
         self.ra_lab = r'Right Ascension (deg) [$\alpha$]'
@@ -148,6 +153,15 @@ class Cluster(object):
         to_ret += '\n'
         to_ret += Fore.WHITE + 'Selection Threshold: \t\t' + Fore.BLUE + '%d' % self.__top_mem
         if self.__distance_estimate == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
+
+        to_ret += Fore.WHITE + 'Minimum Cluster Criterion: \t' + Fore.BLUE + '%d' % self.__min_samples
+        if self.__min_samples == 0:
+            to_ret += pre_filter
+        to_ret += '\n'
+        to_ret += Fore.WHITE + 'Epsilon Radius: \t' + Fore.BLUE + '%.3f' % self.__epsilon
+        if self.__min_samples == 0:
             to_ret += pre_filter
         to_ret += '\n'
         return to_ret
@@ -361,9 +375,82 @@ class Cluster(object):
         return filtered_df
 
 
+    def dbscan_filter(self,
+                    n_mem: int = 10,
+                    inplace: bool = True) -> Union[pd.DataFrame, None]:
+        
+        # checks
+        if n_mem < 2:
+            raise ValueError(Fore.RED + 'There must be at least two member in a cluster')
+        for field in self.mem_cols:
+            if field not in self.__df.keys():
+                raise ValueError(Fore.RED + '%s is not present in %s dataframe' % (field, self.__filename))
+        
+        self.__min_samples = n_mem
+
+        x = np.array(self.__df[self.mem_cols[0]])
+        y = np.array(self.__df[self.mem_cols[1]])
+        xy = np.vstack([x, y]).T
+        X = StandardScaler().fit_transform(xy)          # standardize data
+
+        neighbors = NearestNeighbors(n_neighbors=self.__min_samples)
+        neighbor_fit = neighbors.fit(X)
+        distances, _ = neighbor_fit.kneighbors(X)
+        distances = np.sort(distances, axis=0)
+        distances = distances[:, 1]
+        i = np.arange(len(distances))
+        kneedle = KneeLocator(i, distances, S=1, curve='convex', direction='increasing')
+
+        if self.__verbose:
+            plt.plot(distances)
+            plt.axvline(kneedle.knee, color='crimson', linestyle='--', label='Elbow')
+            plt.legend(loc='best')
+            plt.xlabel('Datapoints')
+            plt.ylabel(r'$\epsilon$')
+            plt.title('Elbow Estimate for DBSCAN')
+            plt.show()
+
+        self.__epsilon = kneedle.knee_y
+        self.__dbscan = DBSCAN(eps=self.__epsilon, min_samples=self.__min_samples)
+        db_fit = self.__dbscan.fit(X)
+        core_samples_mask = np.zeros_like(db_fit.labels_, dtype=bool)
+        core_samples_mask[db_fit.core_sample_indices_] = True
+        c_labels = db_fit.labels_
+
+        if self.__verbose:
+            plt.scatter(x, y, c='indigo', marker='.', label='Original Data')
+            plt.xlabel(r'$\mu_{\alpha*} cos(\delta)$' + ' (mas/yr)')
+            plt.ylabel(r'$\mu_{\delta}$' + ' (mas/yr)')
+            plt.title('Vector Point Diagram with DBSCAN selection')
+            plt.scatter(x[c_labels != -1], y[c_labels != -1], marker='.', c='salmon', label='DBSCAN selection')
+            plt.legend(loc='best')
+            plt.show()
+
+        filtered_param = x[c_labels != -1]
+        filtered_df = self.__df[self.__df[self.mem_cols[0]].isin(filtered_param)]
+
+        if self.__create_new:
+            if not path.exists(self.__new_data_dir):
+                mkdir(self.__new_data_dir)
+
+            new_file = ''
+            if path.exists('%s/%s' % (self.__new_data_dir, self.__filename)):
+                new_file = '%s/%s_1.%s' % (self.__new_data_dir, self.__filename, self.__extension)
+            else:
+                new_file = '%s/%s.%s' % (self.__new_data_dir, self.__filename, self.__extension)
+            filtered_df.to_csv(new_file, index=False)
+
+        if inplace:
+            self.__df = filtered_df
+            return None
+        
+        return filtered_df
+
+
 if __name__ == '__main__':
-    clust = Cluster('raw_data/gaia.csv', 5, True, 'new', True)
+    clust = Cluster('raw_data/gaia.csv', 5, verbose=True)
     clust.load_data()
     clust.filter_members()
+    clust.dbscan_filter()
     print(clust)
     clust.visualize(dict(scatter=[('pmra', 'pmdec')], boxplot=['pmra', 'pmdec']))
