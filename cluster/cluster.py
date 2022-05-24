@@ -13,6 +13,7 @@ from kneed import KneeLocator
 
 # system settings
 import sys
+import argparse
 
 
 sys.tracebacklimit = 0
@@ -48,7 +49,7 @@ class Cluster(object):
         
         # meta data for new file
         self.__create_new = new_csv
-        self.__new_data_dir = new_dir if self.__create_new else '%s (default)' % self.__data_directory
+        self.__new_data_dir = new_dir if self.__create_new else '%s' % self.__data_directory
 
         # other meta data
         self.__verbose = verbose
@@ -114,7 +115,11 @@ class Cluster(object):
             to_ret += Fore.RED + 'False'
         to_ret += '\n'
         
-        to_ret += Fore.WHITE + 'Data Output Directory: \t\t' + Fore.CYAN + '%s\n' % self.__new_data_dir
+        to_ret += Fore.WHITE + 'Data Output Directory: \t\t' + Fore.CYAN + '%s' % self.__new_data_dir
+        if not self.__create_new:
+            to_ret += ' (default)'
+        to_ret += '\n'
+
         to_ret += Fore.WHITE + 'Produce Verbose Results: \t'
         if self.__verbose:
             to_ret += Fore.GREEN + 'True'
@@ -274,7 +279,6 @@ class Cluster(object):
 
     def filter_members(self, 
                     dist_est: float = 2500,
-                    num_inits: int = 5,
                     exclusion: int = 5,
                     top_mem: int = 25,
                     inplace: bool = True) -> Union[pd.DataFrame, None]:
@@ -282,7 +286,6 @@ class Cluster(object):
         self.__distance_estimate = dist_est
         self.__top_mem = top_mem
         self.__exclusion = exclusion
-        self.__num_inits = num_inits
         
         # checks
         for label in self.mem_cols:
@@ -448,9 +451,39 @@ class Cluster(object):
 
 
 if __name__ == '__main__':
-    clust = Cluster('raw_data/gaia.csv', 5, verbose=True, new_csv=True, new_dir='new')
-    clust.load_data()
-    clust.filter_members()
-    clust.dbscan_filter()
+
+    parser = argparse.ArgumentParser(description='Append MetaData for working with the Cluster Class')
+
+    parser.add_argument('data_dir', type=str, default='data', help='The directory to read in the data from')
+    parser.add_argument('data', type=str, default='gaia.csv', help='File name (with extension) to extract data from')
+    parser.add_argument('-n', '--new_csv', action='store_true', help='create a new csv post filtering')
+    parser.add_argument('-R', '--results_dir', type=str, default='.', help='The directory to store the new data in')
+    parser.add_argument('-V', '--verbose', action='store_true', help='produce figures for utility functions')
+    parser.add_argument('-i', '--inits', type=int, default='1', help='Number of initializations for GMM')
+    parser.add_argument('-p', '--inplace', action='store_true', help='Performs filtering in place')
+    parser.add_argument('-e', '--dist_est', type=float, default=2500,\
+        help='Best estimate for distance of the cluster in parsecs', required=True)
+    parser.add_argument('-E', '--exclusion', type=int, default=5,\
+        help='Exclusion Threshold for Standard Deviation calculations')
+    parser.add_argument('-m', '--top_m', type=int, default=25, help='Selection threshold for filtered output')
+    parser.add_argument('-M', '--mem', type=int, default=10,\
+        help='Minimum number of points to be considered a cluster')
+
+    args = parser.parse_args()
+
+    clust = Cluster(dataset_path='%s/%s' % (args.data_dir, args.data),
+                    num_inits=args.inits,
+                    new_csv=args.new_csv,
+                    new_dir=args.results_dir,
+                    verbose=args.verbose)
+    res = clust.load_data(inplace=args.inplace)
+    res2 = clust.filter_members(dist_est=args.dist_est,
+                                exclusion=args.exclusion,
+                                top_mem=args.top_m,
+                                inplace=args.inplace)
+    res3 = clust.dbscan_filter(n_mem=args.mem,
+                            inplace=args.inplace)
     print(clust)
+
+    # manually edit these ->
     clust.visualize(dict(scatter=[('pmra', 'pmdec')], boxplot=['pmra', 'pmdec']))
