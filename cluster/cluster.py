@@ -160,7 +160,7 @@ class Cluster(object):
         if self.__min_samples == 0:
             to_ret += pre_filter
         to_ret += '\n'
-        to_ret += Fore.WHITE + 'Epsilon Radius: \t' + Fore.BLUE + '%.3f' % self.__epsilon
+        to_ret += Fore.WHITE + 'Epsilon Radius: \t\t' + Fore.YELLOW + '%.3f' % self.__epsilon
         if self.__min_samples == 0:
             to_ret += pre_filter
         to_ret += '\n'
@@ -334,9 +334,9 @@ class Cluster(object):
         probs, bins = None, 0
 
         if ambi_pred_cnt < .05 * len(bin1) or hist1[0] < .1 * hist2[0] or hist2[0] < .1 * hist1[0]:
-            probs = bin2 if len(mem1) > len(mem2) else bin1
+            probs = bin1 if len(mem1) > len(mem2) else bin2
         else:
-            probs = bin2 if std1 < std2 else bin1
+            probs = bin1 if std1 < std2 else bin2
 
         feeder_frame['probs'] = probs
 
@@ -448,7 +448,7 @@ class Cluster(object):
 
 
 if __name__ == '__main__':
-    clust = Cluster('raw_data/gaia.csv', 5, verbose=True)
+    clust = Cluster('raw_data/gaia.csv', 5, verbose=True, new_csv=True, new_dir='new')
     clust.load_data()
     clust.filter_members()
     clust.dbscan_filter()
